@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "ESP-IDF",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/sdk/esp-idf/**"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/**",
+                    "${workspaceFolder}/sdk/esp-idf/**"
+                ]
+            }
+        }
+    ],
+    "version": 4
+}
