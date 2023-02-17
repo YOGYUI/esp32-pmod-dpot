@@ -18,10 +18,12 @@ public:
 public:
     bool initialize();
     bool set_pot_value(uint8_t value);
+    uint8_t get_pot_value() { return m_value; }
     bool set_resistance_wb(float res);
 
 private:
     static CDpotCtrl* _instance;
+    uint8_t m_value;
     spi_device_handle_t m_handle;
     spi_transaction_t m_spi_transaction;
 };

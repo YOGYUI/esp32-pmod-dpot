@@ -2,8 +2,8 @@
 #include "esp_wifi.h"
 #include <nvs_flash.h>
 #include "logger.h"
+#include "definition.h"
 #include <string.h>
-
 
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 
@@ -28,6 +28,16 @@ bool activate_wifi_softap()
         GetLogger(eLogType::Error)->Log("Failed to initialize nvs flash (ret: %d)", err);
         return false;
     }
+
+    esp_netif_t* wifiAP = esp_netif_create_default_wifi_ap();
+    esp_netif_ip_info_t ipInfo;
+
+    IP4_ADDR(&ipInfo.ip, 10,11,12,1);
+    IP4_ADDR(&ipInfo.gw, 0,0,0,0); // do not advertise as a gateway router
+    IP4_ADDR(&ipInfo.netmask, 255,255,255,0);
+    esp_netif_dhcps_stop(wifiAP);
+    esp_netif_set_ip_info(wifiAP, &ipInfo);
+    esp_netif_dhcps_start(wifiAP);
 
     wifi_init_config_t wifi_init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&wifi_init_cfg);

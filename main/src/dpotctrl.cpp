@@ -12,11 +12,14 @@
 #include "logger.h"
 #include "driver/gpio.h"
 
+#define DPOT_INIT_VALUE 128
+
 CDpotCtrl* CDpotCtrl::_instance = nullptr;
 
 CDpotCtrl::CDpotCtrl()
 {
     m_handle = nullptr;
+    m_value = 0;
     memset(&m_spi_transaction, 0, sizeof(m_spi_transaction));
     m_spi_transaction.length = 8;
     m_spi_transaction.rxlength = 0;
@@ -53,7 +56,7 @@ bool CDpotCtrl::initialize()
     cfg_bus.data6_io_num = -1;
     cfg_bus.data7_io_num = -1;
     cfg_bus.max_transfer_sz = 4092;
-    cfg_bus.isr_cpu_id = INTR_CPU_ID_AUTO;
+    // cfg_bus.isr_cpu_id = INTR_CPU_ID_AUTO;   // esp-idf >= v5.0
     cfg_bus.intr_flags = 0;
     ret = spi_bus_initialize(DPOT_SPI_HOST, &cfg_bus, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
@@ -64,7 +67,7 @@ bool CDpotCtrl::initialize()
     // SPI Bus에 디바이스 부착
     spi_device_interface_config_t cfg_dev_if;
     memset(&cfg_dev_if, 0, sizeof(cfg_dev_if));
-    cfg_dev_if.clock_source = SPI_CLK_SRC_DEFAULT;
+    // cfg_dev_if.clock_source = SPI_CLK_SRC_DEFAULT;   // esp-idf >= v5.0
     cfg_dev_if.clock_speed_hz = 10 * 1000 * 1000;    // Max 25MHz
     cfg_dev_if.mode = 0;
     cfg_dev_if.spics_io_num = PIN_DPOT_SPI_CS;
@@ -77,7 +80,7 @@ bool CDpotCtrl::initialize()
         return false;
     }
 
-    return true;
+    return set_pot_value(DPOT_INIT_VALUE);
 }
 
 bool CDpotCtrl::set_pot_value(uint8_t value)
@@ -87,6 +90,7 @@ bool CDpotCtrl::set_pot_value(uint8_t value)
         return false;
     }
 
+    m_value = value;
     m_spi_transaction.tx_buffer=&value;
     esp_err_t ret = spi_device_polling_transmit(m_handle, &m_spi_transaction);
     if (ret != ESP_OK) {

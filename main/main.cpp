@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_netif.h"
+#include "esp_event.h"
 #include "logger.h"
 #include "dpotctrl.h"
 #include "network.h"
@@ -22,16 +23,5 @@ extern "C" void app_main(void)
 
     activate_wifi_softap();
     GetWebServer()->start();
-
-    /*
-    CDpotCtrl* dpot = GetDPotCtrl();
-    dpot->initialize();
-    uint8_t set_val = 0;
-
-    for(;;) {
-        set_val += 10;
-        dpot->set_pot_value(set_val);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-    */
+    GetDPotCtrl()->initialize();
 }

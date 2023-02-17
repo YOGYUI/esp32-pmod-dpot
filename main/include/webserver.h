@@ -23,8 +23,14 @@ private:
     static CWebServer* _instance;
     httpd_handle_t m_handle;
 
-    bool register_uri_handler();
-    static esp_err_t uri_handler(httpd_req_t *req);
+    void init_spiffs();
+
+    bool register_uri_handler_get_common();
+    static esp_err_t uri_handler_get_common(httpd_req_t *req);
+    bool register_uri_handler_get_dpot();
+    static esp_err_t uri_handler_get_dpot(httpd_req_t *req);
+    bool register_uri_handler_post_dpot();
+    static esp_err_t uri_handler_post_dpot(httpd_req_t *req);
 };
 
 inline CWebServer* GetWebServer() {

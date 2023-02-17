@@ -2,12 +2,25 @@
 #include "logger.h"
 #include "definition.h"
 #include "dpotctrl.h"
+#include <fcntl.h>
+#include "esp_system.h"
+#include "esp_spiffs.h"
+#include "esp_vfs.h"
+#include "cJSON.h"
 
+#define FILE_PATH_MAX                       ESP_VFS_PATH_MAX + 128
+#define SCRATCH_BUFSIZE                     10240
+#define CHECK_FILE_EXTENSION(filename, ext) (strcasecmp(&filename[strlen(filename) - strlen(ext)], ext) == 0)
+#define SPIFFS_BASE_PATH                    "/spiffs"
+#define PARTITION_LABEL                     "web"
+
+static char buffer[SCRATCH_BUFSIZE]{};
 CWebServer* CWebServer::_instance = nullptr;
 
 CWebServer::CWebServer()
 {
     m_handle = nullptr;
+    init_spiffs();
 }
 
 CWebServer::~CWebServer()
@@ -21,6 +34,37 @@ CWebServer* CWebServer::Instance()
     }
 
     return _instance;
+}
+
+void CWebServer::init_spiffs()
+{
+    esp_vfs_spiffs_conf_t conf;
+    conf.base_path = SPIFFS_BASE_PATH;      // File path prefix associated with the filesystem.
+    conf.partition_label = PARTITION_LABEL; // Optional, label of SPIFFS partition to use. If set to NULL, first partition with subtype=spiffs will be used.
+    conf.max_files = 5;                     // Maximum files that could be open at the same time.
+    conf.format_if_mount_failed = false;    // If true, it will format the file system if it fails to mount.
+    esp_err_t result = esp_vfs_spiffs_register(&conf);
+    if (result != ESP_OK) {
+        if (result == ESP_FAIL) {
+            GetLogger(eLogType::Error)->Log("Failed to mount or format filesystem");
+        } else if (result == ESP_ERR_NOT_FOUND) {
+            GetLogger(eLogType::Error)->Log("Failed to find SPIFFS partition");
+        } else {
+            GetLogger(eLogType::Error)->Log("Failed to initialize SPIFFS (%s)", esp_err_to_name(result));
+        }
+        return;
+    }
+
+    size_t total = 0, used = 0;
+    result = esp_spiffs_info(PARTITION_LABEL, &total, &used);
+    if (result != ESP_OK) {
+        GetLogger(eLogType::Error)->Log("Failed to get SPIFFS partition information (%s)", esp_err_to_name(result));
+        return;
+    } else {
+        GetLogger(eLogType::Info)->Log("Partition size: total: %d, used: %d", total, used);
+    }
+
+    GetLogger(eLogType::Info)->Log("initialized SPIFFS");
 }
 
 bool CWebServer::start()
@@ -39,7 +83,9 @@ bool CWebServer::start()
         return false;
     }
 
-    register_uri_handler();
+    register_uri_handler_get_dpot();
+    register_uri_handler_post_dpot();
+    register_uri_handler_get_common();
     
     GetLogger(eLogType::Info)->Log("Started");
     return true;
@@ -61,12 +107,12 @@ bool CWebServer::stop()
     return true;
 }
 
-bool CWebServer::register_uri_handler()
+bool CWebServer::register_uri_handler_get_common()
 {
     httpd_uri_t conf;
-    conf.uri = "/";
+    conf.uri = "/*";
     conf.method = HTTP_GET;
-    conf.handler = CWebServer::uri_handler;
+    conf.handler = CWebServer::uri_handler_get_common;
     conf.user_ctx = nullptr;
 
     if (!m_handle) {
@@ -83,8 +129,176 @@ bool CWebServer::register_uri_handler()
     return true;
 }
 
-esp_err_t CWebServer::uri_handler(httpd_req_t *req)
+esp_err_t CWebServer::uri_handler_get_common(httpd_req_t *req)
 {
-    
+    char filepath[FILE_PATH_MAX]{};
+    char message[256]{};
+    snprintf(filepath, sizeof(filepath), SPIFFS_BASE_PATH);   // base-path
+
+    // set file path from uri 
+    if (req->uri[strlen(req->uri) - 1] == '/') {
+        strlcat(filepath, "/index.html", sizeof(filepath));
+    } else {
+        strlcat(filepath, req->uri, sizeof(filepath));
+    }
+
+    // open file
+    int fd = open(filepath, O_RDONLY, 0);
+    if (fd == -1) {
+        snprintf(message, sizeof(message), "Failed to read existing file (%s)", filepath);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, message);
+        return ESP_FAIL;
+    }
+
+    // set http type
+    const char *type = "text/plain";
+    if (CHECK_FILE_EXTENSION(filepath, ".html")) {
+        type = "text/html";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".js")) {
+        type = "application/javascript";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".css")) {
+        type = "text/css";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".png")) {
+        type = "image/png";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".ico")) {
+        type = "image/x-icon";
+    } else if (CHECK_FILE_EXTENSION(filepath, ".svg")) {
+        type = "text/xml";
+    }
+    httpd_resp_set_type(req, type);
+
+    // read file
+    ssize_t read_bytes;
+    while (true) {
+        read_bytes = read(fd, buffer, SCRATCH_BUFSIZE);
+        if (read_bytes == -1) {
+            GetLogger(eLogType::Error)->Log("Failed to read file (%s)", filepath);
+            break;
+        } else if (read_bytes == 0) {
+            break;
+        } else if (read_bytes > 0) {
+            // send buffer
+            if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+                close(fd);
+                GetLogger(eLogType::Error)->Log("Failed to send buffer");
+                httpd_resp_sendstr_chunk(req, nullptr); // abort sending file
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to send file");
+                return ESP_FAIL;
+            }
+        }
+    }
+    close(fd);
+    // response empty chunk (reason: response completion)
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    return ESP_OK;
+}
+
+bool CWebServer::register_uri_handler_get_dpot()
+{
+    httpd_uri_t conf;
+    conf.uri = "/api/dpot";
+    conf.method = HTTP_GET;
+    conf.handler = CWebServer::uri_handler_get_dpot;
+    conf.user_ctx = nullptr;
+
+    if (!m_handle) {
+        GetLogger(eLogType::Error)->Log("Server is not started");
+        return false;
+    }
+
+    esp_err_t result = httpd_register_uri_handler(m_handle, &conf);
+    if (result != ESP_OK) {
+        GetLogger(eLogType::Error)->Log("Failed to register uri handler %s (ret: %d)", conf.uri, result);
+        return false;
+    }
+
+    return true;
+}
+
+esp_err_t CWebServer::uri_handler_get_dpot(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+
+    cJSON *root = cJSON_CreateObject();
+    if (root) {
+        cJSON_AddNumberToObject(root, "raw_value", GetDPotCtrl()->get_pot_value());
+        const char *info = cJSON_Print(root);
+        httpd_resp_sendstr(req, info);
+        free((void *)info);
+        cJSON_Delete(root);
+    }
+
+    return ESP_OK;
+}
+
+bool CWebServer::register_uri_handler_post_dpot()
+{
+    httpd_uri_t conf;
+    conf.uri = "/api/dpot";
+    conf.method = HTTP_POST;
+    conf.handler = CWebServer::uri_handler_post_dpot;
+    conf.user_ctx = nullptr;
+
+    if (!m_handle) {
+        GetLogger(eLogType::Error)->Log("Server is not started");
+        return false;
+    }
+
+    esp_err_t result = httpd_register_uri_handler(m_handle, &conf);
+    if (result != ESP_OK) {
+        GetLogger(eLogType::Error)->Log("Failed to register uri handler %s (ret: %d)", conf.uri, result);
+        return false;
+    }
+
+    return true;
+}
+
+esp_err_t CWebServer::uri_handler_post_dpot(httpd_req_t *req)
+{
+    char *buf = new char[req->content_len + 1];
+    size_t offset = 0;
+    int ret;
+
+    if (!buf) {
+        GetLogger(eLogType::Error)->Log("Failed to allocate buffer");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    while (offset < req->content_len) {
+        ret = httpd_req_recv(req, buf + offset, req->content_len - offset);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                httpd_resp_send_408(req);
+            }
+            delete[] buf;
+            return ESP_FAIL;
+        }
+        offset += ret;
+    }
+    buf[offset] = '\0';
+
+    cJSON *item = cJSON_ParseWithLength(buf, offset);
+    delete[] buf;
+
+    if (item) {
+        const cJSON *item_raw_value = cJSON_GetObjectItemCaseSensitive(item, "raw_value");
+        if (item_raw_value) {
+            uint8_t value = (uint8_t)item_raw_value->valuedouble;
+
+            GetLogger(eLogType::Info)->Log("dpot post type %d raw value: %g (%d)", item_raw_value->type, item_raw_value->valuedouble, value);
+            if (GetDPotCtrl()->set_pot_value(value)) {
+                httpd_resp_set_status(req, HTTPD_200);
+                httpd_resp_send(req, "OK", 3);
+            } else {
+                httpd_resp_set_status(req, HTTPD_500);
+                httpd_resp_send(req, "NG", 3);
+            }
+        }
+
+        cJSON_Delete(item);
+    }
+
     return ESP_OK;
 }
