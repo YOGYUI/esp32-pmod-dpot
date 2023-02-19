@@ -74,4 +74,7 @@ source ./sdk/esp-idf/install.sh
 
 데모
 ---
-TODO: gif, webpage screen shot
+웹페이지 예시
+![webpage.png](./resource/webpage.png)
+멀티미터 측정 결과
+![demo.gif](./resource/demo.gif)
